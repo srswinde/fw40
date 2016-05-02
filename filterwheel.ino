@@ -1,6 +1,6 @@
 #include <SPI.h>
 #include <Ethernet.h>
-#include "test.h"
+
 // #include "NGPROTO.h"
 // network configuration.  gateway and subnet are optional.
 
@@ -299,7 +299,7 @@ void setup()
 	pinMode( ENCPINA, INPUT_PULLUP );
 	pinMode( ENCPINB, INPUT_PULLUP );
 	
-	digitalWrite(ENABPIN, HIGH);
+	digitalWrite(ENABPIN, LOW);
 
 	// start listening for clients
 
