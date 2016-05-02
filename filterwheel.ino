@@ -26,6 +26,8 @@ const char * ecode[] = {
 #define DIRPIN 6  //Blue wire
 #define ENABPIN 7 //Brown wire
 
+#define ADVPIN 8
+
 #define HOMEPIN 4
 
 #define ENCPINA 2
@@ -295,11 +297,13 @@ void setup()
 	pinMode( STEPPIN, OUTPUT );
 
 	pinMode( HOMEPIN, INPUT );
-	 
+	
+	pinMode( ADVPIN, INPUT_PULLUP );
+	
 	pinMode( ENCPINA, INPUT_PULLUP );
 	pinMode( ENCPINB, INPUT_PULLUP );
 	
-	digitalWrite(ENABPIN, LOW);
+	digitalWrite(ENABPIN, HIGH);
 
 	// start listening for clients
 
@@ -387,6 +391,17 @@ void loop()
 	 
 	}
 
+	if(!motion)
+	{
+		if( digitalRead(ADVPIN ) == LOW )
+		{
+			if ( pos >= (360*5-2*encRes) )
+				comPos = 0;
+			else
+				comPos = pos+360;
+			
+		}
+	}
 }
 
 double linInterp( double x, double x0, double y0, double x1, double y1 )
