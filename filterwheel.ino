@@ -343,7 +343,7 @@ void setup()
 	
 
 	sei();//allow interrupts
-	analogWrite(STEPPIN, 128);
+
 	server.begin();
 }
 
