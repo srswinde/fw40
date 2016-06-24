@@ -4,14 +4,18 @@
 // #include "NGPROTO.h"
 // network configuration.  gateway and subnet are optional.
 
-#define OBSID "VATT"
-#define SYSID "FLAT"
+#define OBSID "CSS40"
+#define SYSID "FW40"
 
 #define NO_ERROR 0
 #define OBSID_ERROR 1
 #define SYSID_ERROR 2
 #define REFNUM_ERROR 3
 #define QUERY_ERROR 4
+
+#define RAMPUP 1
+#define RAMPDOWN 0
+
 
 const char * ecode[] = {
 		"NO ERROR",
@@ -43,9 +47,15 @@ const char * ecode[] = {
 
 //Globals 
 char fnames[6][50];
+/*
+strcpy ( fnames[0], "FILTER0" );
+strcpy ( fnames[1], "FILTER1" );
+strcpy ( fnames[2], "FILTER2" );
+strcpy ( fnames[3], "FILTER3" );
+strcpy ( fnames[4], "FILTER4" );
+strcpy ( fnames[5], "FILTER5" );
 
-
-
+*/
 
 //Encoder states. The state variable probably doesn't have to be global
 short state = 0;
@@ -53,28 +63,30 @@ short lastState = 0;
 
 //Encoder position and commanded position
 double pos = 0; //
-double comPos = 0;
+double comPos = 6*360;
 
 //Ramp variables. 
-double rampDist = 20.0;
+double rampDist = 10.0;
 double rampUpCount = 0;
 double rampUpPos = 0; 
 
 //These Intervals control the pulse width
 //and therefore the speed of the motor
-unsigned int maxInterval = 3;
-unsigned int minInterval = 1;
+unsigned int maxInterval = 20;
+unsigned int minInterval = 0;
 
 //pulseInterval determines the speed.
 //This value is linearly interpolated
 //between the min and max intervals
 //over ramping.
 unsigned int pulseCount = 0;
-unsigned int pulseInterval = 0;
+unsigned int pulseInterval = maxInterval;
 
 //distance after first home sense to home
 int maxHomeCount = 20;
 int homeCount = -1000;
+
+
 
 //interrupt frequence
 int freq = 4000;//in hz
@@ -84,12 +96,9 @@ bool motion;
 bool lmotion = false;//last motion
 
 
-//FYI
-double stepSize = 1.8/4.0;
-double period = 1/freq;
+
 double encRes = 0.9;
-double vel = 0;
-double accel = 1;
+
 
 //pulsing state
 bool pulse = false;
@@ -98,8 +107,7 @@ bool pulse = false;
 bool homing = true;
 
 
-
-//The follow are arrays of possible encoder states
+//array of possible encoder states
 const short diffStates[4][4] = {
                                   {0, 1, -1,  2},
                                   {-1, 0, 2, 1},
@@ -107,7 +115,7 @@ const short diffStates[4][4] = {
                                   {2, -1, 1, 0}
                                   };
 
-//This is howman counts we have moved
+//This is how many counts we have moved
 //as a function of each the diffStates
 const short diffPos[4][4] = {
                               {0, 1, 2, 3},
@@ -118,15 +126,21 @@ const short diffPos[4][4] = {
 float dp = 0;//difference between commanded and current
 
 
+
  // the media access control (ethernet hardware) address for the shield:
 byte mac[] = { 0xDE, 0xAD, 0xBE, 0xEF, 0xFE, 0xED };
 //the IP address for the shield:
-byte ip[] = { 128, 196, 211, 162 };    
+//byte ip[] = { 128, 196, 211, 162 };    
 // the router's gateway address:
-byte gateway[] = { 128,196,208,1};
+//byte gateway[] = { 128,196,208,1};
 // the subnet:
-byte subnet[] = { 255, 255, 0, 0 };
+//byte subnet[] = { 255, 255, 0, 0 };
 
+
+//Mount Lemmon CSS network
+byte subnet[] = { 255,255,255,0 };
+byte gateway[] = { 192,168,2,1 };
+byte ip[] = {192,168,2,46};
 
 
 struct ng_data
@@ -143,15 +157,24 @@ struct ng_data
 struct ng_data data;
 struct ng_data currCom;
 
+bool homepinState=false;
+bool lhomepinState=false;
+
+unsigned char rampState = RAMPUP;
+
+bool move = false;
+double shit=0;
 
 EthernetServer server = EthernetServer(5750);
+
+
 
 //End Globals
 
 //Function prototypes
 int parseNG( char inRaw[] , struct ng_data *parsed );
 void printNG( struct ng_data *inputd );
-String handle_input( struct ng_data *ngInput );
+void handle_input( struct ng_data *ngInput, char resp[] );
 double linInterp(double, double, double, double, double);
 
 
@@ -166,6 +189,7 @@ double linInterp(double, double, double, double, double);
 ******************************/
 ISR(TIMER1_COMPA_vect)
 {
+	
 
 	if ( (comPos-pos) >= 0 )//if wheel is ahead 
 		dp = comPos - pos;
@@ -173,8 +197,9 @@ ISR(TIMER1_COMPA_vect)
 		dp = 6*360 + ( comPos-pos );
 		
 	
-	//pulse width at min max.
-	if(pulseInterval > maxInterval) 
+	
+	//clip pulse width at min or max.
+	if( pulseInterval > maxInterval )
 		pulseInterval = maxInterval;
 	else if( pulseInterval < minInterval )
 		pulseInterval = minInterval;
@@ -185,97 +210,85 @@ ISR(TIMER1_COMPA_vect)
 		pulse = pulse^1;
 		digitalWrite( STEPPIN, pulse );
 		pulseCount = 0;
+		
 	}
 	
-	if( dp > 2*encRes || homing )
+	if( dp > encRes )
 	{//We are not where we need to be move!
 		motion = true;
 		pulseCount++;
 	}
 	else
-	{//We are there. Stop. 
+	{//We are there. Stop.
 		motion = false;
-		//pos=comPos;
+
 	}
 	
-	if( motion == true && lmotion == false)
-	{//We just started moving
-		rampUpCount = 0;
-	}
 	
-	if( (dp < rampDist) )
-	{//We are close, ramp down linearly
-		pulseInterval = (int) round( linInterp( dp, rampDist, minInterval, 0, maxInterval ) );
-	}
-	else if( rampUpCount < rampDist )
-	{//We started movign, Ramp up linearly
-		pulseInterval = (int) round( linInterp( rampUpCount, 0, maxInterval, rampDist, minInterval ) );
-		
-		if ( (pos-rampUpPos) > 0)
-		{//if pos-rampUpPos is not negative ramp up. 
-			rampUpCount += (pos-rampUpPos);	
-		}
-		rampUpPos=pos;
+	if( dp < rampDist )
+	{
+		rampState = RAMPDOWN;
 	}
 	else
-	{// Max speed
-		pulseInterval = 0;
+	{//We just started moving
+		rampState = RAMPUP;
 	}
-	
-	
 	
 	//Read the encoder pins and stuff them into a 2 bit number
 	state = digitalRead(ENCPINA) + (digitalRead(ENCPINB) << 1);
-	if(state != lastState)
-	{//WE have moved update the position
-	 	pos = pos - diffStates[state][lastState]*encRes;
-	 	lastState = state;
-	 	
-		if ( digitalRead(HOMEPIN) == 0 )
-		{//We see the homing magnet!
+	
+	if( state != lastState )
+	{//We moved
+	
 		
-			//We are almost home update the position thusly
-			//This should only happen at startup.
-			if (pos < 6*360-maxHomeCount && homing)
-				pos=6*360.0-maxHomeCount;
-
-			if(homing)
-			{//We are close, ramp down as a function of homeCount
-				pulseInterval = ( int ) linInterp(homeCount, maxHomeCount, maxInterval, 0, minInterval);
-			}
-
-			//The magnet is detected for about 40 encoder steps
-		 	//We count to 20 and we will be at about the middle 
-		 	// of the home position.
-			if( homeCount >= maxHomeCount )
-			{//we should be there. 
-				pos = 0;
-				
-				//set homeCount to arbitrarily negative number
-				homeCount = -1000;
-				
-				if(homing)
-				{//We have homed 
-					
-					
-					
-					homing = false;
-					comPos = 0;
-					pos = 0;
-				}
-			  
-			}
-
-			homeCount++;
-
+		if ( digitalRead(HOMEPIN) == 0 )
+		{
+			//We see the homing magnet!
+			homepinState = true;
 		}
 		else
 		{
-				homeCount = 0;
+			homepinState = false;
+		}
+		
+		//update position
+	 	pos = pos - diffStates[state][lastState]*encRes;
+	 		
+		if( homepinState == false && lhomepinState == true )
+		{
+			pos=17.0;
+			if(homing)
+			{
+				homing=false;
+				comPos = 0;
+			}
 				
 		}
+		
+		if (rampState == RAMPUP)
+			rampUpCount = rampUpCount - diffStates[state][lastState]*encRes;
+		else if( rampState == RAMPDOWN )
+		{	shit++;
+			rampUpCount = rampUpCount + diffStates[state][lastState]*encRes;
+		}
+		
+		 	
+	 	if( rampUpCount > rampDist )
+	 		rampUpCount = rampDist;
+	 	else if(rampUpCount < 0 )
+	 		rampUpCount = 0;	
+	 		
+	 	//set the speed based on ramp
+		pulseInterval =  (int) round( linInterp( rampUpCount, 0, maxInterval, rampDist, minInterval ) );
+		
+		lhomepinState = homepinState;
+		lastState = state;
+	}//End if(state != lastState)
+	
 
-	}
+	
+	//set the speed based on ramp
+	
 	lmotion = motion;
 	
 }
@@ -289,7 +302,7 @@ void setup()
 	Ethernet.begin(mac, ip, gateway, subnet );
 
 	//Serial
-	Serial.begin(9600);
+	//Serial.begin(9600);
 
 	//Set up various pin modes
 	pinMode(LED, OUTPUT);
@@ -309,12 +322,7 @@ void setup()
 
 
 	
-	fnames[0][0] = NULL;
-	fnames[1][0] = NULL;
-	fnames[2][0] = NULL;
-	fnames[3][0] = NULL;
-	fnames[4][0] = NULL;
-	fnames[5][0] = NULL;
+
 
 	cli();//stop interrupts
 
@@ -348,12 +356,15 @@ void setup()
 }
 
 
-
+unsigned int debounce;
 void loop()
 {
 
 	int charCounter= 0;
-	char rawin[200];
+	char rawin[100];
+	char clientResp[50];
+	char fullResp[150];
+	
 	// if an incoming client connects, there will be bytes available to read:
 	EthernetClient client = server.available();
 
@@ -371,7 +382,12 @@ void loop()
 				int syntaxError = parseNG(rawin, &currCom);
 				
 				if ( syntaxError == NO_ERROR )
-					client.println(handle_input( &currCom ));
+				{
+					
+					handle_input( &currCom, clientResp );
+					sprintf( fullResp, "CSS40 FWHEEL %i %s", currCom.refNum, clientResp );
+					client.println( fullResp );
+				}
 				else
 			 		client.println(ecode[syntaxError]);
 			 		
@@ -395,13 +411,17 @@ void loop()
 	{
 		if( digitalRead(ADVPIN ) == LOW )
 		{
-			if ( pos >= (360*5-2*encRes) )
-				comPos = 0;
-			else
-				comPos = pos+360;
-			
+			if ( debounce-- <= 0 )
+			{
+				comPos = comPos+360;
+				if( comPos > 2160)
+					comPos = 360;
+					
+				debounce=20;
+			}
 		}
 	}
+	
 }
 
 double linInterp( double x, double x0, double y0, double x1, double y1 )
@@ -416,28 +436,30 @@ double linInterp( double x, double x0, double y0, double x1, double y1 )
 void floater( double val, char buff[] )
 {//Turn a floating point into a string for printing
     int n,f;
+    char sign = '+';
+    if( val < 0 )
+    {
+    	sign = '-';
+    }
     n = (int) val;
     f = (int) ((val - (int) val)*1000);
-    sprintf( buff, "%i.%i", n,f  );
+    sprintf( buff, "%c%i.%i", sign, n,f  );
 
 }
 
-String handle_input( struct ng_data *ngInput )
+void handle_input( struct ng_data *ngInput, char resp[] )
 {
 	
 	//char helper[50] ;
-	String resp = "UNKOWN COMMAND";
+	strcpy( resp, "UNKOWN COMMAND" );
 	int newPos;
 	int fnum;
+	char allstr[20];
+	char str1[50] = "\0";
+	char str2[50] = "\0";
 	
-	char str1[50];
-	char str2[50];
-	char str3[50];		
-	char str4[50];
-	char str5[50];
-	char str6[50];
 	
-
+	
 	if ( strcmp( ngInput->queryType, "COMMAND") == 0 )
 	{
     
@@ -445,13 +467,14 @@ String handle_input( struct ng_data *ngInput )
 		if( strcmp( ngInput->args[0] , "DISABLE" ) == 0 )
 		{
 			digitalWrite( ENABPIN, LOW);
-			resp = "ok";
+			strcpy( resp, "ok" );
+			
 
 		}
 		else if( strcmp( ngInput->args[0], "ENABLE" ) == 0)
 		{
 			digitalWrite( ENABPIN, HIGH);
-			resp = "ok";
+			strcpy( resp, "ok" );
 
 		}
 		
@@ -463,7 +486,7 @@ String handle_input( struct ng_data *ngInput )
 			{
 				
 				strcpy( fnames[fnum], ngInput->args[2] );
-				resp = "ok";
+				strcpy( resp, "ok" );
 			}
 			
 		}
@@ -478,14 +501,14 @@ String handle_input( struct ng_data *ngInput )
 			{
 				comPos=newPos;
 				
-				resp = "ok";
+				strcpy( resp, "ok" );
 			}
 
 		}
 		
 		else if( strcmp( ngInput->args[0], "GOTONMAE" ) == 0 )
 		{
-			resp = "???";
+			strcpy( resp, "???" );
 			for( fnum=0; fnum < 6; fnum++ )
 			{
 				if( strcmp( fnames[fnum], ngInput->args[1] ) == 0 )
@@ -494,7 +517,7 @@ String handle_input( struct ng_data *ngInput )
 					if( (newPos >= 0) && (newPos < 1801) && ( (int) newPos % 360) == 0 )
 					{
 						comPos=newPos;
-						resp = "ok";
+						strcpy( resp, "ok" );
 					}
 				}
 			}
@@ -507,10 +530,29 @@ String handle_input( struct ng_data *ngInput )
 		{
 			homing = true;
 			rampUpCount=0;
-			resp = "ok";
+			strcpy( resp, "ok" );
 
 		}
-    
+		
+		else if( strcmp ( ngInput->args[0], "MOVE" ) == 0 )
+		{
+			move=true;
+			strcpy( resp, "ok" );
+
+		}
+    	else if( strcmp ( ngInput->args[0], "STOP" ) == 0 )
+		{
+			move=false;
+			strcpy( resp, "ok" );
+
+		}
+		
+		else if( strcmp ( ngInput->args[0], "PULSE" ) == 0 )
+		{
+			pulseInterval = atol( ngInput->args[1] );
+			strcpy( resp, "ok" );
+
+		}
     
 	}
 	else if( strcmp(  ngInput->queryType, "REQUEST" ) == 0 )
@@ -519,60 +561,71 @@ String handle_input( struct ng_data *ngInput )
 
 		if( strcmp(  ngInput->args[0], "FNAME" ) == 0 )
 		{	
-				resp = "???";
+				strcpy( resp, "???");
 				sscanf( ngInput->args[1], "%i", &fnum );
 				if( fnum >= 0 && fnum < 6)
 					if( fnames[fnum] != NULL)
-						resp = String( fnames[fnum] );
+						strcpy( resp, fnames[fnum] ); 
 				
 		}
 		else if( strcmp(  ngInput->args[0], "FNUM" ) == 0 )
 		{
-				resp = "???";
+				strcpy( resp, "???" ) ;
 
 				for( fnum=0; fnum < 6; fnum++ )
+				{
 					if( strcmp( fnames[fnum], ngInput->args[2] ) == 0 )
-						resp = String( fnum );
-
-						
+					{
+						floater( fnum, str1 );
+						strcpy( resp, str1 )		;
+					}
+				}		
 		}
 		
 		
 		else if(strcmp(  ngInput->args[0], "GETALL")== 0 )
-		{
-
+		{	
+			floater( comPos, str1 );
+			floater( pos, str2 );
+			sprintf(allstr, "%i %s %s %i", homepinState, str1, str2, pulseInterval );
+			strcpy(resp, allstr);
 		}
 		
 		else if(strcmp(   ngInput->args[0], "ISMOVING" )== 0 )
 		{
-			resp = String(motion);
+			sprintf( resp, "%i", motion );
 		}
 		
 		else if(strcmp(  ngInput->args[0], "READ_ENC") == 0 )
 		{
 			floater( pos, str1  );
-			resp=String( str1 );
+			strcpy( resp, str1 );
+			
 		}
 		
 		else if(strcmp(  ngInput->args[0], "READHOME") == 0 )
 		{
-			resp = String( digitalRead( HOMEPIN ) );
+			sprintf( resp, "%i", digitalRead( HOMEPIN ) ) ;
 		}
 		else if(strcmp(  ngInput->args[0], "HOMECOUNT") == 0 )
 		{
-			resp = String( homeCount );
+			sprintf(resp, "%i", homeCount );
 		}
-		
+		else if(strcmp(  ngInput->args[0], "PULSE") == 0 )
+		{
+			sprintf( resp, "%i", pulseInterval );
+			
+		}
 
 	}
   
   
 	else
 	{
-		resp="BAD";
+		strcpy( resp, "BAD" );
 	} 
 	
-	return resp;
+
 }
 
 
