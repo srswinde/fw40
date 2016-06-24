@@ -1,6 +1,6 @@
 #include <SPI.h>
 #include <Ethernet.h>
-
+#include <EEPROM.h>
 // #include "NGPROTO.h"
 // network configuration.  gateway and subnet are optional.
 
@@ -85,7 +85,7 @@ unsigned int pulseInterval = maxInterval;
 //distance after first home sense to home
 int maxHomeCount = 20;
 int homeCount = -1000;
-
+double homePos = 17.0;
 
 
 //interrupt frequence
@@ -256,7 +256,7 @@ ISR(TIMER1_COMPA_vect)
 	 		
 		if( homepinState == false && lhomepinState == true )
 		{
-			pos=17.0;
+			pos=homePos;
 			if(homing)
 			{
 				homing=false;
@@ -320,7 +320,7 @@ void setup()
 
 	// start listening for clients
 
-
+	homePos = (float) EEPROM.read(0);
 	
 
 
@@ -385,7 +385,7 @@ void loop()
 				{
 					
 					handle_input( &currCom, clientResp );
-					sprintf( fullResp, "CSS40 FWHEEL %i %s", currCom.refNum, clientResp );
+					sprintf( fullResp, "%s %s %i %s", OBSID, SYSID, currCom.refNum, clientResp );
 					client.println( fullResp );
 				}
 				else
@@ -457,7 +457,7 @@ void handle_input( struct ng_data *ngInput, char resp[] )
 	char allstr[20];
 	char str1[50] = "\0";
 	char str2[50] = "\0";
-	
+	int newHome;
 	
 	
 	if ( strcmp( ngInput->queryType, "COMMAND") == 0 )
@@ -470,6 +470,19 @@ void handle_input( struct ng_data *ngInput, char resp[] )
 			strcpy( resp, "ok" );
 			
 
+		}
+		else if( strcmp( ngInput->args[0] , "SETHOME" ) == 0 )
+		{	
+			//homePos = 12.0;
+			sscanf( ngInput->args[1], "%i", &newHome );
+			homePos = (float) newHome;
+			strcpy( resp, "ok" );
+		}
+
+		else if( strcmp( ngInput->args[0] , "SAVEHOME" ) == 0 )
+		{
+			EEPROM.write( 0, (char) atoi( ngInput->args[1] ) );
+			strcpy( resp, "ok" );
 		}
 		else if( strcmp( ngInput->args[0], "ENABLE" ) == 0)
 		{
@@ -506,7 +519,7 @@ void handle_input( struct ng_data *ngInput, char resp[] )
 
 		}
 		
-		else if( strcmp( ngInput->args[0], "GOTONMAE" ) == 0 )
+		else if( strcmp( ngInput->args[0], "GOTONAME" ) == 0 )
 		{
 			strcpy( resp, "???" );
 			for( fnum=0; fnum < 6; fnum++ )
@@ -591,11 +604,16 @@ void handle_input( struct ng_data *ngInput, char resp[] )
 			strcpy(resp, allstr);
 		}
 		
-		else if(strcmp(   ngInput->args[0], "ISMOVING" )== 0 )
+		else if(strcmp(   ngInput->args[0], "MOT" )== 0 )
 		{
 			sprintf( resp, "%i", motion );
 		}
-		
+		else if(strcmp(   ngInput->args[0], "HOMEPOS" )== 0 )
+		{
+			//strcpy( resp, "shit" );
+			floater( homePos, str1 );
+			strcpy( resp, str1 );
+		}
 		else if(strcmp(  ngInput->args[0], "READ_ENC") == 0 )
 		{
 			floater( pos, str1  );
